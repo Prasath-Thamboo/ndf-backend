@@ -1,0 +1,11 @@
+# Fichiers sensibles
+.env
+config.json
+*.pem
+*.key
+*.sqlite
+/logs/
+/backups/
+
+node_modules/
+dist/
