@@ -1,43 +1,117 @@
-import express from 'express';
-import { body, validationResult } from 'express-validator';
-import Expense from '../models/expense.model.js';
-import { authenticate, authorize } from '../middlewares/auth.js';
-import { uploadReceipt } from '../config/multer.js';
+import express from "express";
+import Expense from "../models/expense.model.js";
+import { authenticate } from "../middlewares/auth.js";
 
 const router = express.Router();
 
-// Middleware générique
-const validate = (rules) => [
-  ...rules,
-  (req, res, next) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
-    }
-    next();
-  },
-];
-
-// Validation création de note
-const validateExpense = [
-  body('title').trim().notEmpty().withMessage('Titre requis'),
-  body('amount').isFloat({ min: 0 }).withMessage('Montant invalide'),
-  body('date').isISO8601().withMessage('Date invalide'),
-  body('category').isIn(['Travel','Meals','Office','Other']).withMessage('Catégorie invalide'),
-];
-
-// Routes
-router.post('/', authenticate, authorize('user','manager','admin'), uploadReceipt.single('receipt'), validate(validateExpense), async (req,res,next) => {
+// Créer une note de frais
+router.post("/", authenticate, async (req, res) => {
   try {
-    const { title, amount, category, date, currency } = req.body;
-    const receiptUrl = req.file ? `/uploads/${req.file.filename}` : '';
-    const exp = await Expense.create({
-      user: req.user.sub,
-      title, amount, category, date, currency, receiptUrl
+    const { title, amount, date, category, description } = req.body;
+
+    if (!title || !amount || !date) {
+      return res.status(400).json({ message: "Champs obligatoires manquants." });
+    }
+
+    const expense = await Expense.create({
+      user: req.user.id,
+      title,
+      amount,
+      date,
+      category,
+      description,
     });
-    res.status(201).json(exp);
-  } catch(e){ next(e); }
+
+    res.status(201).json(expense);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
 });
 
-// ... autres routes (my, update, delete, pending, decision, admin)
+// Récupérer toutes les notes de l'utilisateur connecté
+router.get("/", authenticate, async (req, res) => {
+  try {
+    const expenses = await Expense.find({ user: req.user.id }).sort({ date: -1 });
+    res.json(expenses);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
+// Récupérer une note spécifique (si propriétaire)
+router.get("/:id", authenticate, async (req, res) => {
+  try {
+    const expense = await Expense.findOne({
+      _id: req.params.id,
+      user: req.user.id,
+    });
+
+    if (!expense) {
+      return res.status(404).json({ message: "Note de frais introuvable." });
+    }
+
+    res.json(expense);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
+// Mettre à jour une note (seulement si pending)
+router.patch("/:id", authenticate, async (req, res) => {
+  try {
+    const expense = await Expense.findOne({
+      _id: req.params.id,
+      user: req.user.id,
+    });
+
+    if (!expense) {
+      return res.status(404).json({ message: "Note de frais introuvable." });
+    }
+
+    if (expense.status !== "pending") {
+      return res
+        .status(400)
+        .json({ message: "Impossible de modifier une note déjà traitée." });
+    }
+
+    const { title, amount, date, category, description } = req.body;
+
+    if (title !== undefined) expense.title = title;
+    if (amount !== undefined) expense.amount = amount;
+    if (date !== undefined) expense.date = date;
+    if (category !== undefined) expense.category = category;
+    if (description !== undefined) expense.description = description;
+
+    await expense.save();
+    res.json(expense);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
+// Supprimer une note (seulement si pending)
+router.delete("/:id", authenticate, async (req, res) => {
+  try {
+    const expense = await Expense.findOne({
+      _id: req.params.id,
+      user: req.user.id,
+    });
+
+    if (!expense) {
+      return res.status(404).json({ message: "Note de frais introuvable." });
+    }
+
+    if (expense.status !== "pending") {
+      return res
+        .status(400)
+        .json({ message: "Impossible de supprimer une note déjà traitée." });
+    }
+
+    await expense.deleteOne();
+    res.status(204).send();
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
 export default router;
