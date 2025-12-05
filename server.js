@@ -1,29 +1,30 @@
+// 🔥 CHARGER DOTENV AVANT TOUT
+import "./load-env.js";
+
 import express from "express";
-import dotenv from "dotenv";
 import cors from "cors";
 import mongoose from "mongoose";
 
-dotenv.config();
-
 import userRoutes from "./routes/user.routes.js";
-import expenseRoutes from "./routes/expense.routes.js"; // ← ajout
+import expenseRoutes from "./routes/expense.routes.js";
+import scanRoutes from "./routes/scan.routes.js";
 
 const app = express();
+
 app.use(cors());
+
 app.use(express.json());
 
-// Auth
+// Routes
 app.use("/api/auth", userRoutes);
-
-// Notes de frais
-app.use("/api/expenses", expenseRoutes); // ← ajout
+app.use("/api/expenses", expenseRoutes);
+app.use("/api/scan", scanRoutes);
 
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => {
-    console.log("JWT_SECRET =", process.env.JWT_SECRET);
-    app.listen(4000, () =>
+    app.listen(process.env.PORT || 4000, () =>
       console.log("Backend running on http://localhost:4000")
     );
   })
-  .catch((err) => console.error(err));
+  .catch(console.error);
