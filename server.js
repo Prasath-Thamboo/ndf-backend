@@ -15,6 +15,13 @@ app.use(cors());
 
 app.use(express.json());
 
+
+import fs from "fs";
+console.log(
+  "Google key exists:",
+  fs.existsSync(process.env.GOOGLE_APPLICATION_CREDENTIALS)
+);
+
 // Routes
 app.use("/api/auth", userRoutes);
 app.use("/api/expenses", expenseRoutes);
@@ -28,3 +35,5 @@ mongoose
     );
   })
   .catch(console.error);
+
+
