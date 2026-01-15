@@ -7,29 +7,34 @@ const expenseSchema = new mongoose.Schema(
       ref: "User",
       required: true,
     },
-    title: {
-      type: String,
-      required: true,
-      trim: true,
-    },
-    amount: {
-      type: Number,
-      required: true,
-      min: 0,
-    },
-    date: {
-      type: Date,
-      required: true,
-    },
+
+    title: { type: String, required: true },
+    amount: { type: Number, required: true },
+    date: { type: Date, required: true },
+
     category: {
       type: String,
       enum: ["transport", "repas", "hébergement", "autre"],
       default: "autre",
     },
-    description: {
-      type: String,
-      trim: true,
+
+    description: String,
+
+    // 🧾 Justificatif
+    receipt: {
+      filename: String,
+      originalName: String,
+      mimeType: String,
+      path: String,
+      size: Number,
     },
+
+    // 🧠 IA
+    createdByAI: {
+      type: Boolean,
+      default: false,
+    },
+
     status: {
       type: String,
       enum: ["pending", "approved", "rejected"],
