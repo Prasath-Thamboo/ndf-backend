@@ -1,7 +1,6 @@
 import express from "express";
 import upload from "../middlewares/upload.js";
 import fs from "fs/promises";
-import path from "path";
 import OpenAI from "openai";
 import { authenticate } from "../middlewares/auth.js";
 
@@ -11,9 +10,19 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// fichiers acceptés (côté route en plus de multer)
-const ALLOWED_MIME = new Set(["image/jpeg", "image/png", "image/webp"]);
+// Types MIME autorisés (double sécurité : multer + route)
+const ALLOWED_MIME = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+]);
 
+/**
+ * =====================================================
+ * SCAN IA — PRÉVISUALISATION (SANS CRÉATION EN BASE)
+ * POST /api/scan
+ * =====================================================
+ */
 router.post("/", authenticate, upload.single("receipt"), async (req, res) => {
   try {
     if (!req.file) {
@@ -22,93 +31,114 @@ router.post("/", authenticate, upload.single("receipt"), async (req, res) => {
 
     if (!ALLOWED_MIME.has(req.file.mimetype)) {
       return res.status(400).json({
-        message: "Format non supporté. Formats acceptés: JPG, PNG, WEBP",
+        message: "Format non supporté. Formats acceptés : JPG, PNG, WEBP",
       });
     }
 
-    // Lire l'image et construire une data URL
-    const imageBuffer = await fs.readFile(req.file.path);
-    const base64 = imageBuffer.toString("base64");
+    // Lecture du fichier et conversion en data URL
+    const buffer = await fs.readFile(req.file.path);
+    const base64 = buffer.toString("base64");
     const dataUrl = `data:${req.file.mimetype};base64,${base64}`;
 
-    // Appel vision ChatGPT
-    const response = await openai.chat.completions.create({
+    // Appel OpenAI Vision
+    const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       temperature: 0,
-      max_tokens: 350,
+      max_tokens: 400,
       messages: [
         {
           role: "system",
-          content:
-            "Tu extrais des informations de justificatifs (notes de frais). Réponds uniquement en JSON valide.",
+          content: `
+Tu es un extracteur de notes de frais.
+Tu DOIS répondre UNIQUEMENT avec un JSON valide (pas de texte, pas de markdown).
+
+Champs attendus :
+{
+  title: string,
+  amount: number | null,
+  date: string (YYYY-MM-DD) | null,
+  category: "transport" | "repas" | "hébergement" | "autre",
+  description: string | null
+}
+
+Si une information est introuvable :
+- mets null (sauf category -> "autre")
+`.trim(),
         },
         {
           role: "user",
           content: [
             {
               type: "text",
-              text:
-                "Analyse ce justificatif et retourne UNIQUEMENT un JSON valide avec les champs: " +
-                "{ title: string, amount: number, date: string(YYYY-MM-DD), category: 'transport'|'repas'|'hébergement'|'autre', description: string }. " +
-                "Si une valeur est introuvable, mets null (sauf category -> 'autre').",
+              text: "Analyse ce justificatif et extrais les informations demandées.",
             },
-            { type: "image_url", image_url: { url: dataUrl } },
+            {
+              type: "image_url",
+              image_url: { url: dataUrl },
+            },
           ],
         },
       ],
     });
 
-    const raw = response.choices?.[0]?.message?.content || "";
+    const raw = completion.choices?.[0]?.message?.content || "";
 
-    // Parse robuste: on extrait le premier bloc JSON
+    // Parsing robuste du JSON
     const json = extractJson(raw);
 
-    // Normalisation minimale
-    const data = {
-      title: json.title ?? "Note de frais",
+    // Normalisation / sécurisation
+    const normalized = {
+      title:
+        typeof json.title === "string" && json.title.trim()
+          ? json.title.trim()
+          : "Note de frais",
+
       amount:
         typeof json.amount === "number"
           ? json.amount
-          : json.amount
-          ? Number(String(json.amount).replace(",", "."))
+          : typeof json.amount === "string"
+          ? parseAmount(json.amount)
           : null,
+
       date: normalizeDate(json.date),
       category: normalizeCategory(json.category),
-      description: json.description ?? "",
+      description:
+        typeof json.description === "string" ? json.description.trim() : "",
     };
 
-    return res.json(data);
+    return res.json(normalized);
   } catch (err) {
-    // Gestion propre des quotas (429) et erreurs OpenAI
     const status = err?.status || err?.response?.status;
 
     if (status === 429) {
       return res.status(429).json({
-        message:
-          "Quota OpenAI dépassé. Vérifie ton plan et la facturation OpenAI.",
+        message: "Quota OpenAI dépassé. Réessaie plus tard.",
+        code: "SCAN_QUOTA",
       });
     }
 
-    console.error("Erreur scan IA:", err);
+    console.error("Erreur scan IA :", err);
     return res.status(500).json({
-      message: "Erreur d'analyse IA",
-      error: err?.message || "unknown_error",
+      message: "Erreur lors de l'analyse IA",
+      code: "SCAN_FAILED",
     });
   }
 });
 
 export default router;
 
-// ----------------- helpers -----------------
+/* =====================================================
+ * Helpers
+ * ===================================================== */
 
 function extractJson(text) {
-  // accepte JSON pur ou JSON dans un bloc ```json
+  // Support JSON brut ou ```json ... ```
   const fenced = text.match(/```json\s*([\s\S]*?)\s*```/i);
   const candidate = fenced ? fenced[1] : text;
 
-  // prend du premier { au dernier }
   const start = candidate.indexOf("{");
   const end = candidate.lastIndexOf("}");
+
   if (start === -1 || end === -1 || end <= start) {
     throw new Error("Réponse IA non parsable en JSON");
   }
@@ -117,22 +147,36 @@ function extractJson(text) {
   return JSON.parse(slice);
 }
 
+function parseAmount(value) {
+  const cleaned = String(value)
+    .replace(/\s/g, "")
+    .replace(",", ".")
+    .replace(/[^\d.]/g, "");
+
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : null;
+}
+
 function normalizeCategory(cat) {
   const v = String(cat || "").toLowerCase();
+
   if (v.includes("trans")) return "transport";
   if (v.includes("rep")) return "repas";
   if (v.includes("héberg") || v.includes("heberg") || v.includes("hotel"))
     return "hébergement";
+
   return "autre";
 }
 
-function normalizeDate(d) {
-  if (!d) return null;
-  // attend YYYY-MM-DD, sinon tente dd/mm/yyyy
-  const s = String(d).trim();
+function normalizeDate(value) {
+  if (!value) return null;
 
+  const s = String(value).trim();
+
+  // YYYY-MM-DD
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
 
+  // dd/mm/yyyy
   const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
   if (m) return `${m[3]}-${m[2]}-${m[1]}`;
 
