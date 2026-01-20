@@ -11,17 +11,22 @@ const openai = new OpenAI({
 });
 
 // Types MIME autorisés (double sécurité : multer + route)
-const ALLOWED_MIME = new Set([
-  "image/jpeg",
-  "image/png",
-  "image/webp",
-]);
+const ALLOWED_MIME = new Set(["image/jpeg", "image/png", "image/webp"]);
 
 /**
  * =====================================================
  * SCAN IA — PRÉVISUALISATION (SANS CRÉATION EN BASE)
  * POST /api/scan
  * =====================================================
+ * Retour attendu (JSON):
+ * {
+ *   merchant: string | null,
+ *   title: string,
+ *   amount: number | null,
+ *   date: string (YYYY-MM-DD) | null,
+ *   category: "transport" | "repas" | "hébergement" | "autre",
+ *   description: string | null
+ * }
  */
 router.post("/", authenticate, upload.single("receipt"), async (req, res) => {
   try {
@@ -44,25 +49,31 @@ router.post("/", authenticate, upload.single("receipt"), async (req, res) => {
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       temperature: 0,
-      max_tokens: 400,
+      max_tokens: 450,
       messages: [
         {
           role: "system",
           content: `
-Tu es un extracteur de notes de frais.
+Tu es un extracteur de notes de frais à partir de justificatifs (tickets/factures).
 Tu DOIS répondre UNIQUEMENT avec un JSON valide (pas de texte, pas de markdown).
+
+Objectif important:
+- "merchant" = nom de l'entreprise / enseigne émettrice (souvent en haut, logo/nom).
+- "title" = un libellé court humain. Si possible: merchant + type (ex: "Carrefour - achat"), sinon merchant seul, sinon "Note de frais".
 
 Champs attendus :
 {
-  title: string,
-  amount: number | null,
-  date: string (YYYY-MM-DD) | null,
-  category: "transport" | "repas" | "hébergement" | "autre",
+  merchant: string | null,
+  title: string | null,
+  amount: number | string | null,
+  date: string (YYYY-MM-DD) | string | null,
+  category: "transport" | "repas" | "hébergement" | "autre" | null,
   description: string | null
 }
 
-Si une information est introuvable :
-- mets null (sauf category -> "autre")
+Règles:
+- Si introuvable: mets null (sauf category -> "autre").
+- Ne devine pas: si incertain, null.
 `.trim(),
         },
         {
@@ -70,7 +81,8 @@ Si une information est introuvable :
           content: [
             {
               type: "text",
-              text: "Analyse ce justificatif et extrais les informations demandées.",
+              text:
+                "Analyse ce justificatif. Extrais en priorité l'enseigne (merchant) et les champs demandés. Réponds uniquement en JSON.",
             },
             {
               type: "image_url",
@@ -87,11 +99,20 @@ Si une information est introuvable :
     const json = extractJson(raw);
 
     // Normalisation / sécurisation
+    const merchant =
+      typeof json.merchant === "string" && json.merchant.trim()
+        ? json.merchant.trim()
+        : null;
+
+    const titleFromAI =
+      typeof json.title === "string" && json.title.trim()
+        ? json.title.trim()
+        : null;
+
     const normalized = {
-      title:
-        typeof json.title === "string" && json.title.trim()
-          ? json.title.trim()
-          : "Note de frais",
+      merchant,
+      // Si l'IA ne met pas title mais merchant est présent, on met merchant en title
+      title: titleFromAI || merchant || "Note de frais",
 
       amount:
         typeof json.amount === "number"
@@ -102,6 +123,7 @@ Si une information est introuvable :
 
       date: normalizeDate(json.date),
       category: normalizeCategory(json.category),
+
       description:
         typeof json.description === "string" ? json.description.trim() : "",
     };

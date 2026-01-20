@@ -3,43 +3,9 @@ import Expense from "../models/expense.model.js";
 import { authenticate } from "../middlewares/auth.js";
 import upload from "../middlewares/upload.js";
 
-import vision from "@google-cloud/vision";
-import parseExpenseFromText from "../services/parseExpenseFromText.js";
 
 const router = express.Router();
-const visionClient = new vision.ImageAnnotatorClient();
 
-/**
- * ===========================
- * SCAN IA — PRÉVISUALISATION (SANS SAUVEGARDE)
- * POST /api/expenses/scan-preview
- * ===========================
- */
-router.post(
-  "/scan-preview",
-  authenticate,
-  upload.single("receipt"),
-  async (req, res) => {
-    try {
-      if (!req.file) {
-        return res.status(400).json({ message: "Justificatif requis" });
-      }
-
-      const [result] = await visionClient.textDetection(req.file.path);
-      const text = result.fullTextAnnotation?.text;
-
-      if (!text) {
-        return res.status(400).json({ message: "Impossible de lire le justificatif" });
-      }
-
-      const parsedData = parseExpenseFromText(text);
-      return res.json(parsedData);
-    } catch (err) {
-      console.error("Erreur analyse IA :", err);
-      return res.status(500).json({ message: "Erreur lors de l'analyse IA" });
-    }
-  }
-);
 
 /**
  * ===========================
