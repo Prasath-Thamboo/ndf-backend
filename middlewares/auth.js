@@ -1,3 +1,4 @@
+// middlewares/auth.js  (mise à jour recommandée: backward-compatible)
 import jwt from "jsonwebtoken";
 
 export function authenticate(req, res, next) {
@@ -8,7 +9,15 @@ export function authenticate(req, res, next) {
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded; 
+
+    // ✅ backward-compatible: si ancien token = {id, role}
+    req.user = {
+      id: decoded.id,
+      role: decoded.role,
+      accountType: decoded.accountType ?? undefined,
+      companyId: decoded.companyId ?? null,
+    };
+
     next();
   } catch (e) {
     return res.status(401).json({ message: "Token invalide" });

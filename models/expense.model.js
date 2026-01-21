@@ -1,3 +1,4 @@
+// models/expense.model.js
 import mongoose from "mongoose";
 
 const expenseSchema = new mongoose.Schema(
@@ -6,6 +7,15 @@ const expenseSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: true,
+      index: true,
+    },
+
+    // ✅ Nouveau: rattachement société (null si solo)
+    companyId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Company",
+      default: null,
+      index: true,
     },
 
     title: { type: String, required: true },
@@ -20,7 +30,6 @@ const expenseSchema = new mongoose.Schema(
 
     description: String,
 
-    // 🧾 Justificatif
     receipt: {
       filename: String,
       originalName: String,
@@ -29,17 +38,19 @@ const expenseSchema = new mongoose.Schema(
       size: Number,
     },
 
-    // 🧠 IA
-    createdByAI: {
-      type: Boolean,
-      default: false,
-    },
+    createdByAI: { type: Boolean, default: false },
 
     status: {
       type: String,
       enum: ["pending", "approved", "rejected"],
       default: "pending",
+      index: true,
     },
+
+    // ✅ Nouveau: validation/refus
+    validatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    validatedAt: { type: Date, default: null },
+    rejectionReason: { type: String, default: "" },
   },
   { timestamps: true }
 );
