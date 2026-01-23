@@ -22,6 +22,19 @@ async function createUniqueInviteCode() {
   throw new Error("Impossible de générer un code d'invitation unique");
 }
 
+function signToken(user) {
+  return jwt.sign(
+    {
+      id: user._id,
+      role: user.role,
+      accountType: user.accountType,
+      companyId: user.companyId || null,
+    },
+    process.env.JWT_SECRET,
+    { expiresIn: "7d" }
+  );
+}
+
 export async function registerUser(req, res) {
   try {
     const { name, email, password, accountType, companyName, inviteCode } = req.body;
@@ -30,16 +43,18 @@ export async function registerUser(req, res) {
       return res.status(400).json({ message: "Nom, email et mot de passe requis" });
     }
 
-    const exists = await User.findOne({ email: String(email).toLowerCase().trim() });
+    const normalizedEmail = String(email).toLowerCase().trim();
+
+    const exists = await User.findOne({ email: normalizedEmail });
     if (exists) return res.status(400).json({ message: "Email déjà utilisé" });
 
     const passwordHash = await bcrypt.hash(password, 10);
 
-    // ✅ SOLO = manager de lui-même, pas de companyId
+    // ✅ SOLO
     if (!accountType || accountType === "solo") {
       const user = await User.create({
         name,
-        email,
+        email: normalizedEmail,
         passwordHash,
         accountType: "solo",
         companyId: null,
@@ -47,9 +62,19 @@ export async function registerUser(req, res) {
         isActive: true,
       });
 
+      const token = signToken(user);
+
       return res.status(201).json({
         message: "Compte créé",
-        user: user._id,
+        token,
+        user: {
+          id: user._id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          accountType: user.accountType,
+          companyId: user.companyId,
+        },
       });
     }
 
@@ -58,14 +83,13 @@ export async function registerUser(req, res) {
       return res.status(400).json({ message: "accountType invalide" });
     }
 
-    // Cas A: création entreprise (manager) si companyName présent
+    // Cas A: création entreprise (manager)
     if (companyName && String(companyName).trim()) {
       const code = await createUniqueInviteCode();
 
-      // créer d'abord user manager (sans companyId), puis company, puis update user
       const user = await User.create({
         name,
-        email,
+        email: normalizedEmail,
         passwordHash,
         accountType: "company",
         companyId: null,
@@ -83,14 +107,24 @@ export async function registerUser(req, res) {
       user.companyId = company._id;
       await user.save();
 
+      const token = signToken(user);
+
       return res.status(201).json({
         message: "Compte entreprise créé",
-        user: user._id,
+        token,
+        user: {
+          id: user._id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          accountType: user.accountType,
+          companyId: user.companyId,
+        },
         company: { id: company._id, name: company.name, inviteCode: company.inviteCode },
       });
     }
 
-    // Cas B: rejoindre entreprise (employee) via inviteCode
+    // Cas B: rejoindre entreprise (employee)
     if (!inviteCode || !String(inviteCode).trim()) {
       return res.status(400).json({
         message: "inviteCode requis pour rejoindre une entreprise (ou companyName pour créer).",
@@ -107,7 +141,7 @@ export async function registerUser(req, res) {
 
     const user = await User.create({
       name,
-      email,
+      email: normalizedEmail,
       passwordHash,
       accountType: "company",
       companyId: company._id,
@@ -115,9 +149,19 @@ export async function registerUser(req, res) {
       isActive: true,
     });
 
+    const token = signToken(user);
+
     return res.status(201).json({
       message: "Compte employé créé",
-      user: user._id,
+      token,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        accountType: user.accountType,
+        companyId: user.companyId,
+      },
       company: { id: company._id, name: company.name },
     });
   } catch (e) {
@@ -136,17 +180,7 @@ export async function loginUser(req, res) {
     const match = await bcrypt.compare(password, user.passwordHash);
     if (!match) return res.status(400).json({ message: "Identifiants invalides" });
 
-    // ✅ Token enrichi pour les règles d’accès (manager/employee + company)
-    const token = jwt.sign(
-      {
-        id: user._id,
-        role: user.role,
-        accountType: user.accountType,
-        companyId: user.companyId || null,
-      },
-      process.env.JWT_SECRET,
-      { expiresIn: "7d" }
-    );
+    const token = signToken(user);
 
     res.json({
       token,
