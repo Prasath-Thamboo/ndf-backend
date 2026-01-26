@@ -27,7 +27,8 @@ router.post("/", authenticate, upload.single("receipt"), async (req, res) => {
     const dbUser = await User.findById(req.user.id).select(
       "accountType companyId role"
     );
-    if (!dbUser) return res.status(401).json({ message: "Utilisateur introuvable" });
+    if (!dbUser)
+      return res.status(401).json({ message: "Utilisateur introuvable" });
 
     const receipt = req.file
       ? {
@@ -75,6 +76,7 @@ router.post("/", authenticate, upload.single("receipt"), async (req, res) => {
  * - solo: ses notes
  * - employee: ses notes
  * - manager: notes de sa company
+ * + query optionnelle: ?status=pending|approved|rejected
  * ===========================
  */
 router.get("/", authenticate, async (req, res) => {
@@ -82,10 +84,8 @@ router.get("/", authenticate, async (req, res) => {
     const dbUser = await User.findById(req.user.id).select(
       "accountType companyId role"
     );
-    if (!dbUser) return res.status(401).json({ message: "Utilisateur introuvable" });
-
-    // (debug léger, à retirer ensuite)
-    // console.log("GET /expenses dbUser:", dbUser);
+    if (!dbUser)
+      return res.status(401).json({ message: "Utilisateur introuvable" });
 
     let filter = {};
 
@@ -106,7 +106,23 @@ router.get("/", authenticate, async (req, res) => {
       }
     }
 
-    const expenses = await Expense.find(filter).sort({ date: -1, createdAt: -1 });
+    // ✅ filtre optionnel par status via query string
+    const { status } = req.query;
+    if (status) {
+      const allowed = ["pending", "approved", "rejected"];
+      if (!allowed.includes(status)) {
+        return res.status(400).json({ message: "Statut invalide" });
+      }
+      filter.status = status;
+    }
+
+    // ✅ populate user uniquement pour manager/admin (utile pour ManagerDashboard)
+    let query = Expense.find(filter).sort({ date: -1, createdAt: -1 });
+    if (dbUser.role === "manager" || dbUser.role === "admin") {
+      query = query.populate("user", "name email role");
+    }
+
+    const expenses = await query;
     return res.json(expenses);
   } catch (err) {
     console.error("Erreur chargement notes :", err);
@@ -129,7 +145,8 @@ router.get("/:id", authenticate, async (req, res) => {
     const dbUser = await User.findById(req.user.id).select(
       "accountType companyId role"
     );
-    if (!dbUser) return res.status(401).json({ message: "Utilisateur introuvable" });
+    if (!dbUser)
+      return res.status(401).json({ message: "Utilisateur introuvable" });
 
     const expense = await Expense.findById(req.params.id);
     if (!expense) return res.status(404).json({ message: "Note introuvable" });
@@ -181,7 +198,8 @@ router.delete("/:id", authenticate, async (req, res) => {
     const dbUser = await User.findById(req.user.id).select(
       "accountType companyId role"
     );
-    if (!dbUser) return res.status(401).json({ message: "Utilisateur introuvable" });
+    if (!dbUser)
+      return res.status(401).json({ message: "Utilisateur introuvable" });
 
     const expense = await Expense.findById(req.params.id);
     if (!expense) return res.status(404).json({ message: "Note introuvable" });
@@ -244,7 +262,8 @@ router.patch("/:id/approve", authenticate, requireManager, async (req, res) => {
     const dbUser = await User.findById(req.user.id).select(
       "accountType companyId role"
     );
-    if (!dbUser) return res.status(401).json({ message: "Utilisateur introuvable" });
+    if (!dbUser)
+      return res.status(401).json({ message: "Utilisateur introuvable" });
 
     if (dbUser.accountType !== "company" || !dbUser.companyId) {
       return res
@@ -255,8 +274,21 @@ router.patch("/:id/approve", authenticate, requireManager, async (req, res) => {
     const expense = await Expense.findById(req.params.id);
     if (!expense) return res.status(404).json({ message: "Note introuvable" });
 
-    if (String(expense.companyId || "") !== String(dbUser.companyId)) {
+    // ✅ défense : refuse toute note hors entreprise
+    if (!expense.companyId) {
+      return res.status(400).json({ message: "Note hors entreprise" });
+    }
+
+    // ✅ même company obligatoire
+    if (String(expense.companyId) !== String(dbUser.companyId)) {
       return res.status(403).json({ message: "Accès refusé" });
+    }
+
+    // ✅ option métier recommandée : empêcher auto-validation
+    if (String(expense.user) === String(req.user.id)) {
+      return res
+        .status(403)
+        .json({ message: "Impossible de valider sa propre note" });
     }
 
     if ((expense.status ?? "pending") !== "pending") {
@@ -288,7 +320,8 @@ router.patch("/:id/reject", authenticate, requireManager, async (req, res) => {
     const dbUser = await User.findById(req.user.id).select(
       "accountType companyId role"
     );
-    if (!dbUser) return res.status(401).json({ message: "Utilisateur introuvable" });
+    if (!dbUser)
+      return res.status(401).json({ message: "Utilisateur introuvable" });
 
     if (dbUser.accountType !== "company" || !dbUser.companyId) {
       return res
@@ -299,8 +332,21 @@ router.patch("/:id/reject", authenticate, requireManager, async (req, res) => {
     const expense = await Expense.findById(req.params.id);
     if (!expense) return res.status(404).json({ message: "Note introuvable" });
 
-    if (String(expense.companyId || "") !== String(dbUser.companyId)) {
+    // ✅ défense : refuse toute note hors entreprise
+    if (!expense.companyId) {
+      return res.status(400).json({ message: "Note hors entreprise" });
+    }
+
+    // ✅ même company obligatoire
+    if (String(expense.companyId) !== String(dbUser.companyId)) {
       return res.status(403).json({ message: "Accès refusé" });
+    }
+
+    // ✅ option métier recommandée : empêcher auto-refus
+    if (String(expense.user) === String(req.user.id)) {
+      return res
+        .status(403)
+        .json({ message: "Impossible de refuser sa propre note" });
     }
 
     if ((expense.status ?? "pending") !== "pending") {
