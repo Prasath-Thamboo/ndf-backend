@@ -246,3 +246,58 @@ export const updateMe = async (req, res) => {
     return res.status(500).json({ message: "Erreur lors de la mise à jour du profil" });
   }
 };
+
+export async function changePassword(req, res) {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({
+        message: "Mot de passe actuel et nouveau mot de passe requis",
+      });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({
+        message: "Le nouveau mot de passe doit contenir au moins 8 caractères",
+      });
+    }
+
+    const user = await User.findById(req.user.id).select("passwordHash");
+    if (!user) {
+      return res.status(401).json({ message: "Utilisateur introuvable" });
+    }
+
+    const ok = await bcrypt.compare(currentPassword, user.passwordHash);
+    if (!ok) {
+      return res.status(403).json({
+        message: "Mot de passe actuel incorrect",
+      });
+    }
+
+    const hash = await bcrypt.hash(newPassword, 12);
+    user.passwordHash = hash;
+    await user.save();
+
+    // 🧾 audit
+    await logAudit({
+      req,
+      actorId: req.user.id,
+      companyId: req.user.companyId || null,
+      action: "user.password.changed",
+      targetType: "user",
+      targetId: req.user.id,
+      metadata: {},
+    });
+
+    return res.json({
+      message: "Mot de passe modifié. Veuillez vous reconnecter.",
+      forceLogout: true,
+    });
+  } catch (err) {
+    console.error("Erreur change password :", err);
+    return res.status(500).json({
+      message: "Erreur lors du changement de mot de passe",
+    });
+  }
+}
