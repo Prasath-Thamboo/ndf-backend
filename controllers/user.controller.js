@@ -206,3 +206,43 @@ export async function getMe(req, res) {
     res.status(500).json({ message: e.message });
   }
 }
+
+export const updateMe = async (req, res) => {
+  try {
+    const { name, email } = req.body;
+
+    const hasName = typeof name === "string" && name.trim().length > 0;
+    const hasEmail = typeof email === "string" && email.trim().length > 0;
+
+    if (!hasName && !hasEmail) {
+      return res.status(400).json({ message: "Aucune donnée à mettre à jour" });
+    }
+
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ message: "Utilisateur introuvable" });
+
+    if (hasName) user.name = name.trim();
+    if (hasEmail) user.email = email.trim().toLowerCase();
+
+    await user.save();
+
+    // ✅ on renvoie exactement la forme attendue par le front (comme /me)
+    return res.json({
+      id: user._id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      accountType: user.accountType,
+      companyId: user.companyId || null,
+    });
+  } catch (err) {
+    console.error("updateMe error:", err);
+
+    // email unique déjà pris
+    if (err?.code === 11000) {
+      return res.status(400).json({ message: "Cet email est déjà utilisé" });
+    }
+
+    return res.status(500).json({ message: "Erreur lors de la mise à jour du profil" });
+  }
+};

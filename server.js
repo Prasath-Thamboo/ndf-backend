@@ -10,6 +10,8 @@ import userRoutes from "./routes/user.routes.js";
 import expenseRoutes from "./routes/expense.routes.js";
 import scanRoutes from "./routes/scan.routes.js";
 import companyRoutes from "./routes/company.routes.js";
+import auditRoutes from "./routes/audit.routes.js";
+
 
 const app = express();
 
@@ -27,6 +29,8 @@ app.use("/api/auth", userRoutes);
 app.use("/api/expenses", expenseRoutes);
 app.use("/api/scan", scanRoutes);
 app.use("/api/company", companyRoutes);
+app.use("/api/audit", auditRoutes);
+
 
 // (optionnel) route santé
 app.get("/api/health", (req, res) => res.json({ ok: true }));
