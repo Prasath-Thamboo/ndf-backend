@@ -1,20 +1,24 @@
 import multer from "multer";
-import path from "path";
-import fs from "fs";
 
-const uploadDir = "uploads";
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
+export const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5 Mo
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadDir),
-  filename: (req, file, cb) =>
-    cb(null, Date.now() + "-" + file.originalname.replace(/\s+/g, "_")),
-});
+// Le fichier reste en mémoire (req.file.buffer) : c'est storage.service.js
+// qui l'enregistre, et seulement une fois la requête validée.
+const storage = multer.memoryStorage();
 
 const fileFilter = (req, file, cb) => {
-  const allowed = ["image/jpeg", "image/png", "image/jpg", "application/pdf"];
-  if (allowed.includes(file.mimetype)) cb(null, true);
-  else cb(new Error("Format non supporté"), false);
+  const allowed = [
+    "image/jpeg",
+    "image/png",
+    "image/jpg",
+    "image/webp",
+    "application/pdf",
+  ];
+  if (allowed.includes(file.mimetype)) return cb(null, true);
+
+  const err = new Error("Format non supporté. Formats acceptés : JPG, PNG, WEBP, PDF");
+  err.status = 400;
+  cb(err, false);
 };
 
-export default multer({ storage, fileFilter });
+export default multer({ storage, fileFilter, limits: { fileSize: MAX_FILE_SIZE } });

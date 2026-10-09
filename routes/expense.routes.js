@@ -5,12 +5,29 @@ import User from "../models/user.model.js";
 import { authenticate } from "../middlewares/auth.js";
 import { requireManager } from "../middlewares/requireManager.js";
 import upload from "../middlewares/upload.js";
-import fs from "fs";
-import path from "path";
+import {
+  saveReceipt,
+  readReceipt,
+  deleteReceipt,
+} from "../services/storage.service.js";
 import { sendExpenseEmail } from "../services/mail.service.js";
 import { logAudit } from "../services/audit.service.js";
 
 const router = express.Router();
+
+const isManagerRole = (u) => u.role === "manager" || u.role === "admin";
+
+/**
+ * Règle d'accès commune (lecture / suppression / justificatif) :
+ * - solo ou sans entreprise : uniquement ses notes
+ * - entreprise : même company, et manager ou propriétaire
+ */
+function canAccessExpense(dbUser, expense, userId) {
+  const isOwner = String(expense.user) === String(userId);
+  if (dbUser.accountType === "solo" || !dbUser.companyId) return isOwner;
+  if (String(expense.companyId || "") !== String(dbUser.companyId)) return false;
+  return isManagerRole(dbUser) || isOwner;
+}
 
 /**
  * ===========================
@@ -34,16 +51,6 @@ router.post("/", authenticate, upload.single("receipt"), async (req, res) => {
     if (!dbUser) {
       return res.status(401).json({ message: "Utilisateur introuvable" });
     }
-
-    const receipt = req.file
-      ? {
-          filename: req.file.filename,
-          originalName: req.file.originalname,
-          mimeType: req.file.mimetype,
-          path: req.file.path,
-          size: req.file.size,
-        }
-      : null;
 
     const isSolo = dbUser.accountType === "solo";
     const isCompany = dbUser.accountType === "company";
@@ -133,21 +140,30 @@ router.post("/", authenticate, upload.single("receipt"), async (req, res) => {
       initialStatus = "pending";
     }
 
-    const expense = await Expense.create({
-      user: targetUserId,
-      companyId: dbUser.companyId || null,
-      title,
-      amount: Number(amount),
-      date: new Date(date),
-      category,
-      description,
-      receipt,
-      createdByAI: false,
-      status: initialStatus,
-      validatedBy,
-      validatedAt,
-      rejectionReason: "",
-    });
+    // Le justificatif n'est enregistré qu'une fois toutes les vérifications passées
+    const receipt = req.file ? await saveReceipt(req.file) : null;
+
+    let expense;
+    try {
+      expense = await Expense.create({
+        user: targetUserId,
+        companyId: dbUser.companyId || null,
+        title,
+        amount: Number(amount),
+        date: new Date(date),
+        category,
+        description,
+        receipt,
+        createdByAI: false,
+        status: initialStatus,
+        validatedBy,
+        validatedAt,
+        rejectionReason: "",
+      });
+    } catch (err) {
+      await deleteReceipt(receipt);
+      throw err;
+    }
 
     // ✅ Audit log: création
     await logAudit({
@@ -256,29 +272,7 @@ router.get("/:id", authenticate, async (req, res) => {
     const expense = await Expense.findById(req.params.id);
     if (!expense) return res.status(404).json({ message: "Note introuvable" });
 
-    if (dbUser.accountType === "solo") {
-      if (String(expense.user) !== String(req.user.id)) {
-        return res.status(403).json({ message: "Accès refusé" });
-      }
-      return res.json(expense);
-    }
-
-    if (!dbUser.companyId) {
-      if (String(expense.user) !== String(req.user.id)) {
-        return res.status(403).json({ message: "Accès refusé" });
-      }
-      return res.json(expense);
-    }
-
-    if (String(expense.companyId || "") !== String(dbUser.companyId || "")) {
-      return res.status(403).json({ message: "Accès refusé" });
-    }
-
-    if (dbUser.role === "manager" || dbUser.role === "admin") {
-      return res.json(expense);
-    }
-
-    if (String(expense.user) !== String(req.user.id)) {
+    if (!canAccessExpense(dbUser, expense, req.user.id)) {
       return res.status(403).json({ message: "Accès refusé" });
     }
 
@@ -288,6 +282,50 @@ router.get("/:id", authenticate, async (req, res) => {
     return res
       .status(500)
       .json({ message: "Erreur lors de la lecture de la note de frais" });
+  }
+});
+
+/**
+ * ===========================
+ * JUSTIFICATIF D'UNE NOTE
+ * GET /api/expenses/:id/receipt
+ * ===========================
+ */
+router.get("/:id/receipt", authenticate, async (req, res) => {
+  try {
+    const dbUser = await User.findById(req.user.id).select(
+      "accountType companyId role"
+    );
+    if (!dbUser) {
+      return res.status(401).json({ message: "Utilisateur introuvable" });
+    }
+
+    const expense = await Expense.findById(req.params.id).select(
+      "user companyId receipt"
+    );
+    if (!expense) return res.status(404).json({ message: "Note introuvable" });
+
+    if (!canAccessExpense(dbUser, expense, req.user.id)) {
+      return res.status(403).json({ message: "Accès refusé" });
+    }
+
+    if (!expense.receipt?.path) {
+      return res.status(404).json({ message: "Aucun justificatif" });
+    }
+
+    const content = await readReceipt(expense.receipt);
+    if (!content) {
+      return res.status(404).json({ message: "Justificatif introuvable" });
+    }
+
+    if (expense.receipt.mimeType) res.type(expense.receipt.mimeType);
+    res.setHeader("Cache-Control", "private, no-store");
+    return res.send(content);
+  } catch (err) {
+    console.error("Erreur lecture justificatif :", err);
+    return res
+      .status(500)
+      .json({ message: "Erreur lors de la lecture du justificatif" });
   }
 });
 
@@ -316,83 +354,22 @@ router.delete("/:id", authenticate, async (req, res) => {
         .json({ message: "Suppression impossible : note non 'pending'" });
     }
 
-    // droits
-    if (dbUser.accountType === "solo") {
-      if (String(expense.user) !== String(req.user.id)) {
-        return res.status(403).json({ message: "Accès refusé" });
-      }
-      await expense.deleteOne();
-
-      // ✅ Audit log: suppression
-      await logAudit({
-        req,
-        actorId: req.user.id,
-        companyId: dbUser.companyId || null,
-        action: "expense.deleted",
-        targetType: "expense",
-        targetId: expense._id,
-        metadata: {
-          amount: Number(expense.amount) || 0,
-          statusBefore: status,
-        },
-      });
-
-      return res.json({ message: "Note supprimée" });
-    }
-
-    if (!dbUser.companyId) {
-      if (String(expense.user) !== String(req.user.id)) {
-        return res.status(403).json({ message: "Accès refusé" });
-      }
-      await expense.deleteOne();
-
-      await logAudit({
-        req,
-        actorId: req.user.id,
-        companyId: null,
-        action: "expense.deleted",
-        targetType: "expense",
-        targetId: expense._id,
-        metadata: {
-          amount: Number(expense.amount) || 0,
-          statusBefore: status,
-        },
-      });
-
-      return res.json({ message: "Note supprimée" });
-    }
-
-    if (String(expense.companyId || "") !== String(dbUser.companyId || "")) {
-      return res.status(403).json({ message: "Accès refusé" });
-    }
-
-    // manager/admin peut supprimer pending
-    if (dbUser.role === "manager" || dbUser.role === "admin") {
-      await expense.deleteOne();
-
-      await logAudit({
-        req,
-        actorId: req.user.id,
-        companyId: dbUser.companyId || null,
-        action: "expense.deleted",
-        targetType: "expense",
-        targetId: expense._id,
-        metadata: {
-          amount: Number(expense.amount) || 0,
-          statusBefore: status,
-          deletedByRole: dbUser.role,
-        },
-      });
-
-      return res.json({ message: "Note supprimée" });
-    }
-
-    // employee: uniquement sa note
-    if (String(expense.user) !== String(req.user.id)) {
+    // droits (manager/admin de la company ou propriétaire)
+    if (!canAccessExpense(dbUser, expense, req.user.id)) {
       return res.status(403).json({ message: "Accès refusé" });
     }
 
     await expense.deleteOne();
+    await deleteReceipt(expense.receipt);
+
+    // ✅ Audit log: suppression
+    const metadata = {
+      amount: Number(expense.amount) || 0,
+      statusBefore: status,
+    };
+    if (dbUser.companyId && isManagerRole(dbUser)) {
+      metadata.deletedByRole = dbUser.role;
+    }
 
     await logAudit({
       req,
@@ -401,10 +378,7 @@ router.delete("/:id", authenticate, async (req, res) => {
       action: "expense.deleted",
       targetType: "expense",
       targetId: expense._id,
-      metadata: {
-        amount: Number(expense.amount) || 0,
-        statusBefore: status,
-      },
+      metadata,
     });
 
     return res.json({ message: "Note supprimée" });
@@ -657,15 +631,14 @@ router.post("/email", authenticate, async (req, res) => {
     for (const e of expenses) {
       if (attachments.length >= MAX_ATTACHMENTS) break;
 
-      const receiptPath = e.receipt?.path;
-      if (!receiptPath) continue;
+      if (!e.receipt?.path) continue;
 
-      if (!fs.existsSync(receiptPath)) continue;
+      const content = await readReceipt(e.receipt);
+      if (!content) continue;
 
       attachments.push({
-        filename:
-          e.receipt.originalName || e.receipt.filename || path.basename(receiptPath),
-        path: receiptPath,
+        filename: e.receipt.originalName || e.receipt.filename || "justificatif",
+        content,
         contentType: e.receipt.mimeType,
       });
     }

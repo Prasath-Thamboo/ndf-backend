@@ -3,6 +3,7 @@ import User from "../models/user.model.js";
 import Company from "../models/company.model.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import { logAudit } from "../services/audit.service.js";
 
 function generateInviteCode(length = 6) {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // sans I/O/1/0
@@ -177,8 +178,12 @@ export async function loginUser(req, res) {
     const user = await User.findOne({ email: String(email).toLowerCase().trim() });
     if (!user) return res.status(400).json({ message: "Identifiants invalides" });
 
-    const match = await bcrypt.compare(password, user.passwordHash);
+    const match = await bcrypt.compare(String(password ?? ""), user.passwordHash);
     if (!match) return res.status(400).json({ message: "Identifiants invalides" });
+
+    if (user.isActive === false) {
+      return res.status(403).json({ message: "Compte désactivé. Contactez votre manager." });
+    }
 
     const token = signToken(user);
 

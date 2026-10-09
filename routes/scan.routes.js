@@ -1,17 +1,51 @@
 import express from "express";
 import upload from "../middlewares/upload.js";
-import fs from "fs/promises";
-import OpenAI from "openai";
+import Anthropic from "@anthropic-ai/sdk";
 import { authenticate } from "../middlewares/auth.js";
 
 const router = express.Router();
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+// Client créé au premier scan : le serveur démarre même sans ANTHROPIC_API_KEY
+let anthropic = null;
+function getAnthropic() {
+  if (!anthropic) anthropic = new Anthropic();
+  return anthropic;
+}
 
 // Types MIME autorisés (double sécurité : multer + route)
 const ALLOWED_MIME = new Set(["image/jpeg", "image/png", "image/webp"]);
+
+const SYSTEM_PROMPT = `
+Tu es un extracteur de notes de frais à partir de justificatifs (tickets/factures).
+
+Objectif important:
+- "merchant" = nom de l'entreprise / enseigne émettrice (souvent en haut, logo/nom).
+- "title" = un libellé court humain. Si possible: merchant + type (ex: "Carrefour - achat"), sinon merchant seul, sinon "Note de frais".
+- "amount" = montant total TTC payé.
+- "date" = date du justificatif au format YYYY-MM-DD.
+
+Règles:
+- Si introuvable: mets null (sauf category -> "autre").
+- Ne devine pas: si incertain, null.
+`.trim();
+
+// Schéma imposé à la réponse de Claude (structured outputs)
+const RECEIPT_SCHEMA = {
+  type: "object",
+  properties: {
+    merchant: { type: ["string", "null"] },
+    title: { type: ["string", "null"] },
+    amount: { type: ["number", "null"] },
+    date: { type: ["string", "null"] },
+    category: {
+      type: "string",
+      enum: ["transport", "repas", "hébergement", "autre"],
+    },
+    description: { type: ["string", "null"] },
+  },
+  required: ["merchant", "title", "amount", "date", "category", "description"],
+  additionalProperties: false,
+};
 
 /**
  * =====================================================
@@ -40,60 +74,51 @@ router.post("/", authenticate, upload.single("receipt"), async (req, res) => {
       });
     }
 
-    // Lecture du fichier et conversion en data URL
-    const buffer = await fs.readFile(req.file.path);
-    const base64 = buffer.toString("base64");
-    const dataUrl = `data:${req.file.mimetype};base64,${base64}`;
+    // Prévisualisation uniquement : le fichier reste en mémoire, il sera
+    // renvoyé à la création de la note
+    const base64 = req.file.buffer.toString("base64");
 
-    // Appel OpenAI Vision
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      temperature: 0,
-      max_tokens: 450,
+    // Appel Claude (vision + sortie JSON structurée)
+    const response = await getAnthropic().beta.messages.create({
+      model: "claude-opus-5-5",
+      max_tokens: 16000,
+      output_config: {
+        effort: "low",
+        format: { type: "json_schema", schema: RECEIPT_SCHEMA },
+      },
+      // Si Claude refuse la requête, l'API la relance sur un modèle de repli
+      betas: ["server-side-fallback-2026-07-01"],
+      fallbacks: "default",
+      system: SYSTEM_PROMPT,
       messages: [
-        {
-          role: "system",
-          content: `
-Tu es un extracteur de notes de frais à partir de justificatifs (tickets/factures).
-Tu DOIS répondre UNIQUEMENT avec un JSON valide (pas de texte, pas de markdown).
-
-Objectif important:
-- "merchant" = nom de l'entreprise / enseigne émettrice (souvent en haut, logo/nom).
-- "title" = un libellé court humain. Si possible: merchant + type (ex: "Carrefour - achat"), sinon merchant seul, sinon "Note de frais".
-
-Champs attendus :
-{
-  merchant: string | null,
-  title: string | null,
-  amount: number | string | null,
-  date: string (YYYY-MM-DD) | string | null,
-  category: "transport" | "repas" | "hébergement" | "autre" | null,
-  description: string | null
-}
-
-Règles:
-- Si introuvable: mets null (sauf category -> "autre").
-- Ne devine pas: si incertain, null.
-`.trim(),
-        },
         {
           role: "user",
           content: [
             {
-              type: "text",
-              text:
-                "Analyse ce justificatif. Extrais en priorité l'enseigne (merchant) et les champs demandés. Réponds uniquement en JSON.",
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: req.file.mimetype,
+                data: base64,
+              },
             },
             {
-              type: "image_url",
-              image_url: { url: dataUrl },
+              type: "text",
+              text: "Analyse ce justificatif. Extrais en priorité l'enseigne (merchant) et les champs demandés.",
             },
           ],
         },
       ],
     });
 
-    const raw = completion.choices?.[0]?.message?.content || "";
+    if (response.stop_reason === "refusal") {
+      throw new Error("Analyse refusée par l'IA");
+    }
+
+    const raw = response.content
+      .filter((block) => block.type === "text")
+      .map((block) => block.text)
+      .join("");
 
     // Parsing robuste du JSON
     const json = extractJson(raw);
@@ -130,13 +155,15 @@ Règles:
 
     return res.json(normalized);
   } catch (err) {
-    const status = err?.status || err?.response?.status;
-
-    if (status === 429) {
+    if (err instanceof Anthropic.RateLimitError) {
       return res.status(429).json({
-        message: "Quota OpenAI dépassé. Réessaie plus tard.",
+        message: "Quota IA dépassé. Réessaie plus tard.",
         code: "SCAN_QUOTA",
       });
+    }
+
+    if (err instanceof Anthropic.AuthenticationError) {
+      console.error("Clé ANTHROPIC_API_KEY absente ou invalide");
     }
 
     console.error("Erreur scan IA :", err);

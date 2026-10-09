@@ -34,6 +34,8 @@ const expenseSchema = new mongoose.Schema(
       filename: String,
       originalName: String,
       mimeType: String,
+      // "local" : path = chemin dans uploads/ ; "s3" : path = clé de l'objet
+      storage: { type: String, enum: ["local", "s3"], default: undefined },
       path: String,
       size: Number,
     },

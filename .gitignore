@@ -11,3 +11,5 @@ node_modules/
 dist/
 
 notedf-26c9cb6a5c46.json
+# Justificatifs envoyés par les utilisateurs
+uploads/

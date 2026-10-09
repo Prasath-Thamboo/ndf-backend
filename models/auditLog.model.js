@@ -13,7 +13,7 @@ const AuditLogSchema = new mongoose.Schema(
       // exemples: expense.created, expense.approved, expense.rejected, expense.deleted, expenses.emailed
     },
 
-    targetType: { type: String, required: true, enum: ["expense"] },
+    targetType: { type: String, required: true, enum: ["expense", "user"] },
     targetId: { type: mongoose.Schema.Types.ObjectId, required: true },
 
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} },
