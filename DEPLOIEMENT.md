@@ -98,3 +98,15 @@ Ouvrir le site, créer un compte, puis tester une note avec justificatif et un s
 - Pages « Mentions légales » et « Politique de confidentialité »
 - Possibilité de supprimer son compte et ses données
 - Domaine personnalisé (optionnel) : à configurer dans Vercel (site) et Render (API)
+
+---
+
+## Compte administrateur
+
+L'espace **Administration** (`/admin`) gère tous les comptes et entreprises du site. Le rôle admin ne s'obtient pas par l'inscription : il se crée avec le script, lancé depuis `backend/` avec `MONGO_URI` pointant vers la base voulue (Atlas pour la production) :
+
+```
+npm run create-admin -- admin@exemple.fr "Nom affiché"
+```
+
+Le mot de passe est demandé au clavier. Si l'email existe déjà, le compte est simplement promu administrateur.

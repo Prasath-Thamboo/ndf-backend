@@ -16,6 +16,7 @@ import expenseRoutes from "./routes/expense.routes.js";
 import scanRoutes from "./routes/scan.routes.js";
 import companyRoutes from "./routes/company.routes.js";
 import auditRoutes from "./routes/audit.routes.js";
+import adminRoutes from "./routes/admin.routes.js";
 
 checkEnv();
 
@@ -77,6 +78,7 @@ app.use("/api/expenses", expenseRoutes);
 app.use("/api/scan", scanLimiter, scanRoutes);
 app.use("/api/company", companyRoutes);
 app.use("/api/audit", auditRoutes);
+app.use("/api/admin", adminRoutes);
 
 
 // (optionnel) route santé

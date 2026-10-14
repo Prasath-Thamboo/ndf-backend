@@ -17,17 +17,18 @@ export async function authenticate(req, res, next) {
 
   try {
     // un compte désactivé (ou supprimé) perd l'accès immédiatement
-    const dbUser = await User.findById(decoded.id).select("isActive");
+    const dbUser = await User.findById(decoded.id).select("isActive role accountType companyId");
     if (!dbUser || dbUser.isActive === false) {
       return res.status(401).json({ message: "Compte désactivé" });
     }
 
-    // ✅ backward-compatible: si ancien token = {id, role}
+    // rôle lu en base : un changement de rôle (ex. par un admin) prend effet
+    // immédiatement, sans attendre l'expiration du token
     req.user = {
       id: decoded.id,
-      role: decoded.role,
-      accountType: decoded.accountType ?? undefined,
-      companyId: decoded.companyId ?? null,
+      role: dbUser.role,
+      accountType: dbUser.accountType,
+      companyId: dbUser.companyId ?? null,
     };
 
     next();
